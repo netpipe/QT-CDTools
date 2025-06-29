@@ -1,131 +1,208 @@
 #include <QApplication>
 #include <QFileDialog>
 #include <QVBoxLayout>
-#include <QListWidget>
+#include <QTreeWidget>
 #include <QPushButton>
 #include <QMessageBox>
 #include <QProcess>
 #include <QDir>
+#include <QInputDialog>
+#include <QDragEnterEvent>
+#include <QMimeData>
+#include <QDropEvent>
 #include <QTemporaryDir>
-#include <QDebug>
-
+ 
 class IsoManager : public QWidget {
     Q_OBJECT
-
-    QListWidget *fileList;
-    QString isoPath;
-    QString tempDirPath;
+ 
+    QTreeWidget *tree;
+    QPushButton *btnAdd, *btnRemove, *btnNew, *btnOpen, *btnSave, *btnAddFolder;
     QTemporaryDir tempDir;
-
+    QString isoPath;
+ 
 public:
     IsoManager(QWidget *parent = nullptr) : QWidget(parent) {
         setWindowTitle("ISO Manager");
-
+        setAcceptDrops(true);
+ 
         QVBoxLayout *layout = new QVBoxLayout(this);
-        fileList = new QListWidget(this);
-        layout->addWidget(fileList);
-
-        QPushButton *btnAdd = new QPushButton("Add File", this);
-        QPushButton *btnRemove = new QPushButton("Remove Selected", this);
-        QPushButton *btnNew = new QPushButton("New ISO", this);
-        QPushButton *btnOpen = new QPushButton("Open ISO", this);
-        QPushButton *btnSave = new QPushButton("Save ISO", this);
-
+        tree = new QTreeWidget(this);
+        tree->setHeaderLabels({"ISO Contents"});
+        tree->setSelectionMode(QAbstractItemView::SingleSelection);
+        layout->addWidget(tree);
+ 
+        btnAdd = new QPushButton("Add File(s)", this);
+        btnAddFolder = new QPushButton("Add Folder", this);
+        btnRemove = new QPushButton("Remove Selected", this);
+        btnNew = new QPushButton("New ISO", this);
+        btnOpen = new QPushButton("Open ISO", this);
+        btnSave = new QPushButton("Save ISO", this);
+ 
         layout->addWidget(btnAdd);
+        layout->addWidget(btnAddFolder);
         layout->addWidget(btnRemove);
         layout->addWidget(btnNew);
         layout->addWidget(btnOpen);
         layout->addWidget(btnSave);
-
-        connect(btnAdd, &QPushButton::clicked, this, &IsoManager::addFile);
+ 
+        connect(btnAdd, &QPushButton::clicked, this, &IsoManager::addFiles);
+        connect(btnAddFolder, &QPushButton::clicked, this, &IsoManager::addFolder);
         connect(btnRemove, &QPushButton::clicked, this, &IsoManager::removeSelected);
         connect(btnNew, &QPushButton::clicked, this, &IsoManager::newIso);
         connect(btnOpen, &QPushButton::clicked, this, &IsoManager::openIso);
         connect(btnSave, &QPushButton::clicked, this, &IsoManager::saveIso);
+ 
+        refreshTree();
     }
-
-private slots:
-    void addFile() {
-        QString file = QFileDialog::getOpenFileName(this, "Select file to add");
-        if (!file.isEmpty()) {
-            QFileInfo fi(file);
-            QString dest = tempDir.path() + "/" + fi.fileName();
-            QFile::copy(file, dest);
-            fileList->addItem(fi.fileName());
+ 
+protected:
+    void dragEnterEvent(QDragEnterEvent *event) override {
+        if (event->mimeData()->hasUrls()) {
+            event->acceptProposedAction();
         }
     }
-
+ 
+    void dropEvent(QDropEvent *event) override {
+        for (const QUrl &url : event->mimeData()->urls()) {
+            QString localPath = url.toLocalFile();
+            QFileInfo info(localPath);
+            QString destPath = tempDir.path() + "/" + info.fileName();
+            if (info.isDir()) {
+                QDir().mkpath(destPath);
+            } else {
+                QFile::copy(localPath, destPath);
+            }
+        }
+        refreshTree();
+    }
+ 
+private slots:
+    void addFiles() {
+        QStringList files = QFileDialog::getOpenFileNames(this, "Select File(s)");
+        for (const QString &file : files) {
+            QFileInfo fi(file);
+            QFile::copy(file, tempDir.path() + "/" + fi.fileName());
+        }
+        refreshTree();
+    }
+ 
+    void addFolder() {
+        bool ok;
+        QString name = QInputDialog::getText(this, "New Folder", "Folder Name:", QLineEdit::Normal, "", &ok);
+        if (ok && !name.isEmpty()) {
+            QDir dir(tempDir.path());
+            dir.mkpath(name);
+            refreshTree();
+        }
+    }
+ 
     void removeSelected() {
-        QListWidgetItem *item = fileList->currentItem();
+        QTreeWidgetItem *item = tree->currentItem();
         if (!item) return;
-        QString path = tempDir.path() + "/" + item->text();
-        QFile::remove(path);
+        QString fullPath = tempDir.path() + "/" + item->data(0, Qt::UserRole).toString();
+        QFileInfo info(fullPath);
+        if (info.isDir()) {
+            QDir(fullPath).removeRecursively();
+        } else {
+            QFile::remove(fullPath);
+        }
         delete item;
     }
-
+ 
     void newIso() {
-        tempDir.remove();
-        tempDir = QTemporaryDir();  // reinitialize
-        fileList->clear();
-        isoPath.clear();
-        QMessageBox::information(this, "New ISO", "Started a new ISO project.");
+        tempDir.remove();  // auto-cleans
+        refreshTree();
+        QMessageBox::information(this, "New ISO", "New ISO project started.");
     }
-
+ 
     void openIso() {
-        isoPath = QFileDialog::getOpenFileName(this, "Open ISO file", QString(), "*.iso");
-        if (isoPath.isEmpty()) return;
-
+        QString file = QFileDialog::getOpenFileName(this, "Open ISO File", "", "*.iso");
+        if (file.isEmpty()) return;
+        isoPath = file;
         tempDir.remove();
-        tempDir = QTemporaryDir();  // clean previous content
-
         QProcess p;
-        QStringList args = {"-i", isoPath, "-x", tempDir.path()};
         QString command = QString("7z x \"%1\" -o\"%2\" -y").arg(isoPath, tempDir.path());
         p.start(command);
         if (!p.waitForFinished() || p.exitCode() != 0) {
-            QMessageBox::critical(this, "Error", "Failed to extract ISO (requires 7z).");
+            QMessageBox::critical(this, "Error", "Failed to extract ISO. Ensure 7z is installed.");
             return;
         }
-
-        fileList->clear();
-        QDir dir(tempDir.path());
-        for (QString f : dir.entryList(QDir::Files)) {
-            fileList->addItem(f);
-        }
-        QMessageBox::information(this, "ISO Loaded", "ISO contents loaded.");
+        refreshTree();
     }
-
+ 
     void saveIso() {
-        if (fileList->count() == 0) {
-            QMessageBox::warning(this, "Empty", "No files to write to ISO.");
-            return;
-        }
-
-        QString savePath = QFileDialog::getSaveFileName(this, "Save ISO As", "", "*.iso");
-        if (savePath.isEmpty()) return;
-
-        QProcess process;
+        QString outFile = QFileDialog::getSaveFileName(this, "Save ISO", "", "*.iso");
+        if (outFile.isEmpty()) return;
+ 
+        QProcess p;
         QStringList args = {
-            "-o", savePath,
-            "-J", "-R", "-V", "CustomISO",
-            tempDir.path()
+            "-o", outFile,
+            "-J", "-R", "-V", "MyISO",
+            "-graft-points"
         };
-
-        process.start("genisoimage", args);
-        if (!process.waitForFinished() || process.exitCode() != 0) {
-            QMessageBox::critical(this, "Error", "Failed to create ISO. Is 'genisoimage' installed?");
-        } else {
-            QMessageBox::information(this, "Success", "ISO created successfully.");
+ 
+        QStringList graftArgs;
+        QDir base(tempDir.path());
+        QStringList files = listRecursive(tempDir.path(), base);
+        for (const QString &f : files) {
+            graftArgs << QString("%1=%2").arg(f, tempDir.path() + "/" + f);
         }
+ 
+        args.append(graftArgs);
+        p.start("genisoimage", args);
+        if (!p.waitForFinished() || p.exitCode() != 0) {
+            QMessageBox::critical(this, "Error", "ISO creation failed. Is genisoimage installed?");
+        } else {
+            QMessageBox::information(this, "Done", "ISO saved successfully.");
+        }
+    }
+ 
+    void refreshTree() {
+        tree->clear();
+        addToTree(tempDir.path(), nullptr);
+    }
+ 
+    void addToTree(const QString &path, QTreeWidgetItem *parent) {
+        QDir dir(path);
+        QFileInfoList entries = dir.entryInfoList(QDir::NoDotAndDotDot | QDir::AllEntries);
+        for (const QFileInfo &info : entries) {
+            QTreeWidgetItem *item = new QTreeWidgetItem();
+            item->setText(0, info.fileName());
+            item->setData(0, Qt::UserRole, QDir(tempDir.path()).relativeFilePath(info.filePath()));
+            if (info.isDir()) {
+                item->setIcon(0, style()->standardIcon(QStyle::SP_DirIcon));
+                addToTree(info.filePath(), item);
+            } else {
+                item->setIcon(0, style()->standardIcon(QStyle::SP_FileIcon));
+            }
+            if (parent) parent->addChild(item);
+            else tree->addTopLevelItem(item);
+        }
+    }
+ 
+    QStringList listRecursive(const QString &root, const QDir &base) {
+        QStringList out;
+        QFileInfoList files = QDir(root).entryInfoList(QDir::NoDotAndDotDot | QDir::AllEntries);
+        for (const QFileInfo &info : files) {
+            QString relPath = base.relativeFilePath(info.filePath());
+            if (info.isDir()) {
+                out << relPath;
+                out += listRecursive(info.filePath(), base);
+            } else {
+                out << relPath;
+            }
+        }
+        return out;
     }
 };
-
+ 
 #include <main.moc>
-
+ 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
-    IsoManager w;
-    w.resize(400, 400);
-    w.show();
+    IsoManager win;
+    win.resize(600, 500);
+    win.show();
     return app.exec();
 }
+ 
