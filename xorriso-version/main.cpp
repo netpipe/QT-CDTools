@@ -33,11 +33,13 @@ public:
         QPushButton *addBtn = new QPushButton("Add");
         QPushButton *deleteBtn = new QPushButton("Delete");
         QPushButton *rebuildBtn = new QPushButton("Rebuild ISO");
+        QPushButton *bootBtn = new QPushButton("Make Bootable ISO");
         topLayout->addWidget(openBtn);
         topLayout->addWidget(extractBtn);
         topLayout->addWidget(addBtn);
         topLayout->addWidget(deleteBtn);
         topLayout->addWidget(rebuildBtn);
+        topLayout->addWidget(bootBtn);
 
         tree = new QTreeWidget();
         tree->setHeaderLabel("ISO Contents");
@@ -62,6 +64,7 @@ public:
         connect(addBtn, &QPushButton::clicked, this, &XorrisoIsoManager::addFile);
         connect(deleteBtn, &QPushButton::clicked, this, &XorrisoIsoManager::deleteFile);
         connect(rebuildBtn, &QPushButton::clicked, this, &XorrisoIsoManager::rebuildIso);
+        connect(bootBtn, &QPushButton::clicked, this, &XorrisoIsoManager::makeBootableIso);
     }
 
 protected:
@@ -170,6 +173,28 @@ private:
         QString outFile = QFileDialog::getSaveFileName(this, "Save Rebuilt ISO", "rebuilt.iso");
         if (!outFile.isEmpty()) {
             runXorriso({"-indev", isoPath, "-outdev", outFile, "-commit"});
+        }
+    }
+
+    void makeBootableIso() {
+        QString isoDir = QFileDialog::getExistingDirectory(this, "Select ISO directory with boot files");
+        QString bootImg = QFileDialog::getOpenFileName(this, "Select El Torito Boot Image (e.g. isolinux.bin)");
+        QString outputIso = QFileDialog::getSaveFileName(this, "Save Bootable ISO", "bootable.iso");
+        if (!isoDir.isEmpty() && !bootImg.isEmpty() && !outputIso.isEmpty()) {
+            runXorriso({
+                "-as", "mkisofs",
+                "-o", outputIso,
+                "-b", QFileInfo(bootImg).fileName(),
+                "-no-emul-boot", "-boot-load-size", "4", "-boot-info-table",
+                "-V", "BOOTISO",
+                "-J", "-R",
+                "-isohybrid-mbr", bootImg,
+                "-c", "boot.cat",
+                "-input-charset", "utf-8",
+                "-quiet",
+                "-eltorito-boot", QFileInfo(bootImg).fileName(),
+                isoDir
+            });
         }
     }
 
