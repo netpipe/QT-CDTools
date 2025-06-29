@@ -2,8 +2,10 @@
 #include <QProcess>
 #include <QTemporaryDir>
 #include <QFileInfo>
-
-class IsoManager : public QWidget {
+//	1	Use the burn command: Type hdiutil burn /path/to/your/image.iso and press Enter.
+//	2	Erase a CD/RW first: Use hdiutil burn -erase /path/to/your/image.iso if needed. 
+	
+	class IsoManager : public QWidget {
     Q_OBJECT
 public:
     IsoManager() {

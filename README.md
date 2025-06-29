@@ -2,4 +2,4 @@
 ISO tools wrote in QT
 
 WIP work in progress
-untested but the mac version looks almost ready
+untested but the mac and xorriso version looks almost ready
