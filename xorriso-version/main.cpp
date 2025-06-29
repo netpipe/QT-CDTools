@@ -1,105 +1,194 @@
 #include <QApplication>
 #include <QMainWindow>
+#include <QTreeWidget>
 #include <QPushButton>
-#include <QFileDialog>
-#include <QProcess>
-#include <QTextEdit>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QFileDialog>
 #include <QInputDialog>
+#include <QMessageBox>
+#include <QProcess>
+#include <QLabel>
+#include <QTextEdit>
+#include <QDragEnterEvent>
+#include <QMimeData>
+#include <QDropEvent>
+#include <QDir>
+#include <QFileInfo>
+#include <QSplitter>
 
-class XorrisoGui : public QMainWindow {
+class XorrisoIsoManager : public QMainWindow {
     Q_OBJECT
 
 public:
-    XorrisoGui(QWidget *parent = nullptr) : QMainWindow(parent) {
-        QWidget *central = new QWidget(this);
-        QVBoxLayout *layout = new QVBoxLayout(central);
+    XorrisoIsoManager(QWidget *parent = nullptr) : QMainWindow(parent) {
+        setAcceptDrops(true);
 
-        openBtn = new QPushButton("Open ISO", this);
-        listBtn = new QPushButton("List ISO Files", this);
-        extractBtn = new QPushButton("Extract File", this);
-        addBtn = new QPushButton("Add File", this);
-        deleteBtn = new QPushButton("Delete File", this);
-        output = new QTextEdit(this);
+        QWidget *central = new QWidget(this);
+        QVBoxLayout *mainLayout = new QVBoxLayout(central);
+
+        QHBoxLayout *topLayout = new QHBoxLayout();
+        QPushButton *openBtn = new QPushButton("Open ISO");
+        QPushButton *extractBtn = new QPushButton("Extract");
+        QPushButton *addBtn = new QPushButton("Add");
+        QPushButton *deleteBtn = new QPushButton("Delete");
+        QPushButton *rebuildBtn = new QPushButton("Rebuild ISO");
+        topLayout->addWidget(openBtn);
+        topLayout->addWidget(extractBtn);
+        topLayout->addWidget(addBtn);
+        topLayout->addWidget(deleteBtn);
+        topLayout->addWidget(rebuildBtn);
+
+        tree = new QTreeWidget();
+        tree->setHeaderLabel("ISO Contents");
+
+        output = new QTextEdit();
         output->setReadOnly(true);
 
-        layout->addWidget(openBtn);
-        layout->addWidget(listBtn);
-        layout->addWidget(extractBtn);
-        layout->addWidget(addBtn);
-        layout->addWidget(deleteBtn);
-        layout->addWidget(output);
+        QSplitter *splitter = new QSplitter(Qt::Vertical);
+        splitter->addWidget(tree);
+        splitter->addWidget(output);
+        splitter->setStretchFactor(0, 3);
+        splitter->setStretchFactor(1, 1);
 
-        connect(openBtn, &QPushButton::clicked, this, &XorrisoGui::selectISO);
-        connect(listBtn, &QPushButton::clicked, this, &XorrisoGui::listFiles);
-        connect(extractBtn, &QPushButton::clicked, this, &XorrisoGui::extractFile);
-        connect(addBtn, &QPushButton::clicked, this, &XorrisoGui::addFile);
-        connect(deleteBtn, &QPushButton::clicked, this, &XorrisoGui::deleteFile);
+        mainLayout->addLayout(topLayout);
+        mainLayout->addWidget(splitter);
 
         setCentralWidget(central);
-        resize(600, 400);
+        resize(800, 600);
+
+        connect(openBtn, &QPushButton::clicked, this, &XorrisoIsoManager::openIso);
+        connect(extractBtn, &QPushButton::clicked, this, &XorrisoIsoManager::extractFile);
+        connect(addBtn, &QPushButton::clicked, this, &XorrisoIsoManager::addFile);
+        connect(deleteBtn, &QPushButton::clicked, this, &XorrisoIsoManager::deleteFile);
+        connect(rebuildBtn, &QPushButton::clicked, this, &XorrisoIsoManager::rebuildIso);
+    }
+
+protected:
+    void dragEnterEvent(QDragEnterEvent *event) override {
+        if (event->mimeData()->hasUrls()) event->acceptProposedAction();
+    }
+    void dropEvent(QDropEvent *event) override {
+        for (const QUrl &url : event->mimeData()->urls()) {
+            QString path = url.toLocalFile();
+            if (QFileInfo(path).isFile()) pendingFiles << path;
+        }
+        output->append("Files queued to add: " + pendingFiles.join(", "));
     }
 
 private:
-    QPushButton *openBtn, *listBtn, *extractBtn, *addBtn, *deleteBtn;
+    QTreeWidget *tree;
     QTextEdit *output;
     QString isoPath;
+    QStringList pendingFiles;
 
-    void runCommand(const QStringList &args) {
+    void runXorriso(const QStringList &args) {
         QProcess proc;
         proc.start("xorriso", args);
         proc.waitForFinished(-1);
-        QString out = proc.readAllStandardOutput();
-        QString err = proc.readAllStandardError();
         output->append(">>> " + args.join(" "));
-        output->append(out + err);
+        output->append(proc.readAllStandardOutput());
+        output->append(proc.readAllStandardError());
     }
 
-    void selectISO() {
-        isoPath = QFileDialog::getOpenFileName(this, "Select ISO file", "", "*.iso");
-        if (!isoPath.isEmpty()) {
-            output->append("ISO selected: " + isoPath);
+    void openIso() {
+        isoPath = QFileDialog::getOpenFileName(this, "Open ISO", "", "*.iso");
+        if (isoPath.isEmpty()) return;
+        tree->clear();
+        QProcess proc;
+        proc.start("xorriso", {"-indev", isoPath, "-ls_r", "/"});
+        proc.waitForFinished();
+        QStringList lines = QString(proc.readAllStandardOutput()).split('\n');
+        for (const QString &line : lines) {
+            if (line.startsWith("/")) addPathToTree(line);
         }
     }
 
-    void listFiles() {
-        if (isoPath.isEmpty()) return;
-        runCommand({"-indev", isoPath, "-ls", "/"});
+    void addPathToTree(const QString &path) {
+        QStringList parts = path.split("/", QString::SkipEmptyParts);
+        QTreeWidgetItem *parent = nullptr;
+        for (const QString &part : parts) {
+            QTreeWidgetItem *item = nullptr;
+            if (!parent) {
+                for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+                    if (tree->topLevelItem(i)->text(0) == part) {
+                        item = tree->topLevelItem(i);
+                        break;
+                    }
+                }
+                if (!item) {
+                    item = new QTreeWidgetItem(QStringList(part));
+                    tree->addTopLevelItem(item);
+                }
+            } else {
+                bool found = false;
+                for (int i = 0; i < parent->childCount(); ++i) {
+                    if (parent->child(i)->text(0) == part) {
+                        item = parent->child(i);
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    item = new QTreeWidgetItem(QStringList(part));
+                    parent->addChild(item);
+                }
+            }
+            parent = item;
+        }
     }
 
     void extractFile() {
-        if (isoPath.isEmpty()) return;
-        QString isoFile = QInputDialog::getText(this, "ISO File to Extract", "Path inside ISO:");
-        QString targetDir = QFileDialog::getExistingDirectory(this, "Target Folder");
-        if (!isoFile.isEmpty() && !targetDir.isEmpty()) {
-            runCommand({"-osirrox", "on", "-indev", isoPath, "-extract", isoFile, targetDir});
+        if (!tree->currentItem()) return;
+        QString isoItem = getFullPath(tree->currentItem());
+        QString outDir = QFileDialog::getExistingDirectory(this, "Select extraction directory");
+        if (!outDir.isEmpty()) {
+            runXorriso({"-osirrox", "on", "-indev", isoPath, "-extract", isoItem, outDir});
         }
     }
 
     void addFile() {
-        if (isoPath.isEmpty()) return;
-        QString localFile = QFileDialog::getOpenFileName(this, "Select file to add");
-        QString isoTarget = QInputDialog::getText(this, "ISO Target Path", "Target path in ISO:");
-        if (!localFile.isEmpty() && !isoTarget.isEmpty()) {
-            runCommand({"-dev", isoPath, "-update", "once", localFile, isoTarget});
+        if (isoPath.isEmpty() || pendingFiles.isEmpty()) return;
+        for (const QString &file : pendingFiles) {
+            QString isoTarget = QInputDialog::getText(this, "Target Path", "Enter target path in ISO for: " + file);
+            if (!isoTarget.isEmpty()) {
+                runXorriso({"-dev", isoPath, "-update", "once", file, isoTarget});
+            }
         }
+        pendingFiles.clear();
+        openIso(); // refresh
     }
 
     void deleteFile() {
-        if (isoPath.isEmpty()) return;
-        QString fileToDelete = QInputDialog::getText(this, "File to delete in ISO", "Path:");
-        if (!fileToDelete.isEmpty()) {
-            runCommand({"-dev", isoPath, "-rm", fileToDelete});
+        if (!tree->currentItem()) return;
+        QString isoItem = getFullPath(tree->currentItem());
+        runXorriso({"-dev", isoPath, "-rm", isoItem});
+        openIso(); // refresh
+    }
+
+    void rebuildIso() {
+        QString outFile = QFileDialog::getSaveFileName(this, "Save Rebuilt ISO", "rebuilt.iso");
+        if (!outFile.isEmpty()) {
+            runXorriso({"-indev", isoPath, "-outdev", outFile, "-commit"});
         }
+    }
+
+    QString getFullPath(QTreeWidgetItem *item) {
+        QStringList parts;
+        while (item) {
+            parts.prepend(item->text(0));
+            item = item->parent();
+        }
+        return "/" + parts.join("/");
     }
 };
 
 #include "main.moc"
 
 int main(int argc, char *argv[]) {
-    QApplication a(argc, argv);
-    XorrisoGui w;
-    w.setWindowTitle("Xorriso ISO Manager");
-    w.show();
-    return a.exec();
+    QApplication app(argc, argv);
+    XorrisoIsoManager win;
+    win.setWindowTitle("Xorriso ISO Manager");
+    win.show();
+    return app.exec();
 }
